@@ -8,6 +8,7 @@
     if (!unic_id) {
         unic_id = Lampa.Utils.uid(16);
         Lampa.Storage.set('fxapi_uid', unic_id);
+        console.log('[Filmix] Generated new UID:', unic_id);
     }
 
     // --- Список API-эндпоинтов Filmix (только filmixapp) ---
@@ -23,19 +24,29 @@
 
     function switchApiEndpoint() {
         current_api_index = (current_api_index + 1) % api_endpoints.length;
-        console.log('🔄 Switching Filmix API to: ' + api_endpoints[current_api_index]);
+        console.log('[Filmix] 🔄 Switching API to: ' + api_endpoints[current_api_index]);
         return getApiUrl();
     }
 
-    // --- Рабочие CORS-прокси (проверенные из online_mod.js) ---
+    // --- Расширенный список CORS-прокси ---
     var WORKING_PROXIES = [
-        'https://cors.nb557.workers.dev/',
-        'https://cors.fx666.workers.dev/'
+        'https://cors-anywhere.herokuapp.com/',
+        'https://cors-proxy.fringe.zone/',
+        'https://api.codetabs.com/v1/proxy/?quest=',
+        'https://cors.bridged.cc/',
+        'https://thingproxy.freeboard.io/fetch/',
+        'https://proxy.cors.sh/',
+        'https://cors.eu.org/',
+        'https://corsproxy.io/?',
+        'https://crossorigin.me/',
+        'https://cors.api.netlify.app/'
     ];
 
     function getProxyUrl() {
-        // Чередуем прокси для распределения нагрузки
-        return new Date().getMinutes() % 2 === 0 ? WORKING_PROXIES[0] : WORKING_PROXIES[1];
+        // Берем случайный прокси для распределения нагрузки
+        var proxy = WORKING_PROXIES[Math.floor(Math.random() * WORKING_PROXIES.length)];
+        console.log('[Filmix] Selected proxy:', proxy);
+        return proxy;
     }
 
     // --- Токен для Filmix API ---
@@ -58,10 +69,13 @@
             voice_name: ''
         };
         var retry_count = 0;
-        var max_retries = api_endpoints.length;
+        var max_retries = api_endpoints.length * WORKING_PROXIES.length;
+
+        console.log('[Filmix] Initializing API for:', object.movie ? object.movie.title : 'unknown');
 
         // --- Авторизация ---
         if (!fxapi_token) {
+            console.log('[Filmix] No token found, starting authorization');
             var user_code = '';
             var user_token = '';
             modalopen = true;
@@ -90,38 +104,50 @@
 
             ping_auth = setInterval(function() {
                 var url = getApiUrl() + 'user_profile?' + dev_token + user_token;
+                console.log('[Filmix] Auth check URL:', url);
                 
                 network.silent(url, function(json) {
+                    console.log('[Filmix] Auth response:', json);
                     if (json && json.user_data) {
                         Lampa.Modal.close();
                         clearInterval(ping_auth);
                         Lampa.Storage.set("fxapi_token", user_token);
+                        console.log('[Filmix] Token saved, reloading');
                         window.location.reload();
                     }
-                }, function(a, c) {});
+                }, function(a, c) {
+                    console.log('[Filmix] Auth check error:', a, c);
+                });
             }, 2000);
 
             var tokenUrl = getApiUrl() + 'token_request?' + dev_token;
+            console.log('[Filmix] Token request URL:', tokenUrl);
             
             network.quiet(tokenUrl, function(found) {
+                console.log('[Filmix] Token response:', found);
                 if (found && found.status == 'ok') {
                     user_token = found.code;
                     user_code = found.user_code;
                     modal.find('.selector').text(user_code);
+                    console.log('[Filmix] Got user code:', user_code);
                     if (!$('.modal').length) openModal();
                 } else {
                     Lampa.Noty.show(found || 'Ошибка получения токена');
                 }
             }, function(a, c) {
+                console.log('[Filmix] Token error:', a, c);
                 Lampa.Noty.show('Ошибка подключения к Filmix');
             });
 
             component.loading(false);
             return;
+        } else {
+            console.log('[Filmix] Using existing token:', fxapi_token ? 'present' : 'invalid');
         }
 
         // --- Поиск ---
         this.search = function(_object, sim) {
+            console.log('[Filmix] Search called with similars:', sim);
             if (wait_similars) this.find(sim[0].id);
         };
 
@@ -136,34 +162,58 @@
             var year = parseInt((object.movie.release_date || object.movie.first_air_date || '0000').slice(0, 4));
             var orig = object.movie.original_name || object.movie.original_title;
 
+            console.log('[Filmix] 🔍 Search params:', {
+                query: query,
+                year: year,
+                original: orig,
+                token: fxapi_token ? 'present' : 'missing',
+                api: getApiUrl()
+            });
+
             performSearch();
 
             function performSearch() {
                 var apiUrl = getApiUrl();
                 var searchUrl = apiUrl + 'search?story=' + encodeURIComponent(query) + '&' + dev_token + fxapi_token;
                 
-                // Сразу используем прокси
                 var proxy = getProxyUrl();
-                var fullUrl = proxy + searchUrl;
+                var fullUrl;
+                
+                // Разные прокси требуют разного формата
+                if (proxy.includes('codetabs')) {
+                    fullUrl = proxy + encodeURIComponent(searchUrl);
+                } else {
+                    fullUrl = proxy + searchUrl;
+                }
+                
+                console.log('[Filmix] Search full URL:', fullUrl);
                 
                 network.clear();
-                network.timeout(15000);
+                network.timeout(20000);
                 network.silent(fullUrl, function(json) {
+                    console.log('[Filmix] Search response received:', json ? 'OK' : 'Empty');
                     if (json && json.length) {
+                        console.log('[Filmix] Search results count:', json.length);
                         processResults(json);
                     } else {
+                        console.log('[Filmix] Empty search response, trying next...');
                         if (retry_count < max_retries - 1) {
                             retry_count++;
-                            switchApiEndpoint();
+                            if (retry_count % 2 === 0) {
+                                switchApiEndpoint();
+                            }
                             performSearch();
                         } else {
                             component.doesNotAnswer();
                         }
                     }
                 }, function(error, status) {
+                    console.log('[Filmix] Search failed:', error, status);
                     if (retry_count < max_retries - 1) {
                         retry_count++;
-                        switchApiEndpoint();
+                        if (retry_count % 2 === 0) {
+                            switchApiEndpoint();
+                        }
                         performSearch();
                     } else {
                         component.doesNotAnswer();
@@ -173,6 +223,7 @@
                 function processResults(json) {
                     retry_count = 0;
                     
+                    // Парсим год из alt_name (пример: "Название-2024")
                     var cards = json.filter(function(c) {
                         if (c.alt_name) {
                             var yearMatch = c.alt_name.match(/-(\d{4})$/);
@@ -181,21 +232,29 @@
                         return c.year > year - 2 && c.year < year + 2;
                     });
                     
+                    console.log('[Filmix] Filtered cards by year:', cards.length);
+                    
                     var card = cards.find(function(c) {
                         return c.year == year && 
                                c.original_title && 
                                normalizeString(c.original_title) == normalizeString(orig);
                     });
                     
-                    if (!card && cards.length == 1) card = cards[0];
+                    if (!card && cards.length == 1) {
+                        console.log('[Filmix] Using single result');
+                        card = cards[0];
+                    }
                     
                     if (card) {
+                        console.log('[Filmix] ✅ Found exact match:', card.id, card.alt_name);
                         _this.find(card.id);
                     } else if (json.length) {
+                        console.log('[Filmix] Showing similar results:', json.length);
                         wait_similars = true;
                         component.similars(json);
                         component.loading(false);
                     } else {
+                        console.log('[Filmix] No results found');
                         component.doesNotAnswer();
                     }
                 }
@@ -204,6 +263,7 @@
 
         // --- Получение данных о фильме ---
         this.find = function(filmix_id) {
+            console.log('[Filmix] Getting details for ID:', filmix_id);
             retry_count = 0;
             performFind();
 
@@ -211,30 +271,47 @@
                 var apiUrl = getApiUrl();
                 var detailsUrl = apiUrl + 'post/' + filmix_id + '?' + dev_token + fxapi_token;
                 
-                // Сразу используем прокси
+                console.log('[Filmix] Original details URL:', detailsUrl);
+                
                 var proxy = getProxyUrl();
-                var fullUrl = proxy + detailsUrl;
+                var fullUrl;
+                
+                if (proxy.includes('codetabs')) {
+                    fullUrl = proxy + encodeURIComponent(detailsUrl);
+                } else {
+                    fullUrl = proxy + detailsUrl;
+                }
+                
+                console.log('[Filmix] Full details URL:', fullUrl);
                 
                 network.clear();
-                network.timeout(15000);
+                network.timeout(20000);
                 network.silent(fullUrl, function(found) {
-                    if (found && Object.keys(found).length > 0) {
+                    console.log('[Filmix] Details response received:', found ? 'OK' : 'Empty');
+                    if (found && typeof found === 'object' && Object.keys(found).length > 0) {
+                        console.log('[Filmix] ✅ Success! Data keys:', Object.keys(found));
                         retry_count = 0;
                         success(found);
                         component.loading(false);
                     } else {
+                        console.log('[Filmix] Empty response, trying next...');
                         if (retry_count < max_retries - 1) {
                             retry_count++;
-                            switchApiEndpoint();
+                            if (retry_count % 2 === 0) {
+                                switchApiEndpoint();
+                            }
                             performFind();
                         } else {
                             component.doesNotAnswer();
                         }
                     }
                 }, function(error, status) {
+                    console.log('[Filmix] Details request failed:', error, status);
                     if (retry_count < max_retries - 1) {
                         retry_count++;
-                        switchApiEndpoint();
+                        if (retry_count % 2 === 0) {
+                            switchApiEndpoint();
+                        }
                         performFind();
                     } else {
                         component.doesNotAnswer();
@@ -246,9 +323,11 @@
         // --- Методы для работы с выбором ---
         this.extendChoice = function(saved) {
             Lampa.Arrays.extend(choice, saved, true);
+            console.log('[Filmix] Extended choice:', choice);
         };
 
         this.reset = function() {
+            console.log('[Filmix] Resetting');
             component.reset();
             choice = { season: 0, voice: 0, voice_name: '' };
             extractData(results);
@@ -257,6 +336,7 @@
         };
 
         this.filter = function(type, a, b) {
+            console.log('[Filmix] Filter:', type, a, b);
             choice[a.stype] = b.index;
             if (a.stype == 'voice') choice.voice_name = filter_items.voice[b.index];
 
@@ -267,11 +347,13 @@
         };
 
         this.destroy = function() {
+            console.log('[Filmix] Destroying');
             network.clear();
             results = null;
         };
 
         function success(json) {
+            console.log('[Filmix] Processing success data');
             results = json;
             extractData(json);
             filter();
@@ -279,10 +361,12 @@
         }
 
         function extractData(data) {
+            console.log('[Filmix] Extracting player data');
             extract = {};
             var pl_links = data.player_links;
 
             if (pl_links && pl_links.playlist && Object.keys(pl_links.playlist).length > 0) {
+                console.log('[Filmix] Detected TV series');
                 // Обработка сериалов
                 var seas_num = 0;
                 for (var season in pl_links.playlist) {
@@ -333,6 +417,7 @@
                     }
                 }
             } else if (pl_links && pl_links.movie && pl_links.movie.length > 0) {
+                console.log('[Filmix] Detected movie');
                 // Обработка фильмов
                 var _transl_id = 0;
                 for (var _ID in pl_links.movie) {
@@ -359,6 +444,8 @@
                     };
                 }
             }
+            
+            console.log('[Filmix] Extracted translations:', Object.keys(extract).length);
         }
 
         function getFile(element, max_quality) {
@@ -509,6 +596,7 @@
         }
 
         function append(items) {
+            console.log('[Filmix] Appending', items.length, 'items');
             component.reset();
             component.draw(items, {
                 similars: wait_similars,
@@ -1018,10 +1106,11 @@
     // ================== ЗАПУСК ПЛАГИНА ==================
     function startPlugin() {
         window.online_filmix = true;
+        console.log('[Filmix] Starting plugin v2.2.0');
 
         var manifest = {
             type: 'video',
-            version: '2.1.0',
+            version: '2.2.0',
             name: 'Filmix Online',
             description: 'Плагин для просмотра фильмов и сериалов с Filmix',
             component: 'online_filmix',
@@ -1029,6 +1118,7 @@
                 return { name: Lampa.Lang.translate('online_watch'), description: '' };
             },
             onContextLauch: function onContextLauch(object) {
+                console.log('[Filmix] Launching for:', object.title);
                 resetTemplates();
                 Lampa.Component.add('online_filmix', component);
                 Lampa.Activity.push({
@@ -1135,6 +1225,7 @@
                     if (json.user_data) {
                         if (json.user_data.is_pro) window.filmix.max_qualitie = 1080;
                         if (json.user_data.is_pro_plus) window.filmix.max_qualitie = 2160;
+                        console.log('[Filmix] User status:', json.user_data.is_pro ? 'PRO' : json.user_data.is_pro_plus ? 'PRO+' : 'Free');
                     } else {
                         Lampa.Storage.set('fxapi_token', '');
                         fxapi_token = '';
@@ -1151,6 +1242,8 @@
         if (Lampa.Manifest.app_digital >= 177) {
             Lampa.Storage.sync('online_choice_filmix', 'object_object');
         }
+        
+        console.log('[Filmix] Plugin initialized');
     }
 
     if (!window.online_filmix && Lampa.Manifest.app_digital >= 155) startPlugin();
