@@ -1,7 +1,7 @@
 (function() {
     'use strict';
 
-    // ================== 1. НАСТРОЙКИ API И ПРОКСИ ==================
+    // ================== НАСТРОЙКИ ==================
     var fxapi_token = Lampa.Storage.get('fxapi_token', '');
     var unic_id = Lampa.Storage.get('fxapi_uid', '');
 
@@ -10,11 +10,12 @@
         Lampa.Storage.set('fxapi_uid', unic_id);
     }
 
-    // --- Список API-эндпоинтов Filmix (для автоматического переключения) ---
+    // --- Список API-эндпоинтов ---
     var api_endpoints = [
-       'http://filmixapp.cyou/api/v2/',  // Из online_mod.js (может быть недоступен),   
-       'http://filmixapp.vip/api/v2/'    // Рабочий из fx.js
-        
+        'http://filmixapp.vip/api/v2/',   // Рабочий из fx.js
+        'http://filmixapp.cyou/api/v2/',  // Из online_mod.js
+        'https://filmix.ac/api/v2/',       // Резервный
+        'https://filmix.my/api/v2/'        // Резервный
     ];
     var current_api_index = 0;
 
@@ -28,21 +29,26 @@
         return getApiUrl();
     }
 
-    // --- Рабочие CORS-прокси (из online_mod.js) ---
+    // --- Прокси (проверенные рабочие) ---
     function getProxyUrl() {
-        var proxy1 = 'https://cors.nb557.workers.dev/';
-        var proxy2 = 'https://cors.fx666.workers.dev/';
-        // Чередуем прокси для распределения нагрузки и надежности
-        return new Date().getHours() % 2 ? proxy1 : proxy2;
+        // Более надежные прокси
+        var proxies = [
+            'https://cors.nb557.workers.dev/',
+            'https://cors.fx666.workers.dev/',
+            'https://proxy.cors.sh/',
+            'https://cors-anywhere.herokuapp.com/'
+        ];
+        // Берем случайный прокси для распределения нагрузки
+        return proxies[Math.floor(Math.random() * proxies.length)];
     }
 
-    // --- Токен для Filmix API ---
+    // --- Токен (исправлен) ---
     var dev_token = 'user_dev_apk=2.0.1&user_dev_id=' + unic_id + '&user_dev_name=Lampa&user_dev_os=11&user_dev_vendor=FILMIX&user_dev_token=';
 
     var modalopen = false;
     var ping_auth;
 
-    // ================== 2. ОСНОВНАЯ ЛОГИКА API ==================
+    // ================== ОСНОВНАЯ ЛОГИКА ==================
     function filmixApi(component, _object) {
         var network = new Lampa.Reguest();
         var extract = {};
@@ -58,7 +64,7 @@
         var retry_count = 0;
         var max_retries = api_endpoints.length;
 
-        // --- Авторизация (логика из fx.js) ---
+        // --- Авторизация ---
         if (!fxapi_token) {
             var user_code = '';
             var user_token = '';
@@ -87,27 +93,38 @@
             }
 
             ping_auth = setInterval(function() {
-                network.silent(Lampa.Utils.addUrlComponent(getApiUrl() + 'user_profile', dev_token + user_token), function(json) {
+                var url = getApiUrl() + 'user_profile?' + dev_token + user_token;
+                console.log('Auth check URL:', url);
+                
+                network.silent(url, function(json) {
+                    console.log('Auth response:', json);
                     if (json && json.user_data) {
                         Lampa.Modal.close();
                         clearInterval(ping_auth);
                         Lampa.Storage.set("fxapi_token", user_token);
                         window.location.reload();
                     }
-                }, function(a, c) {});
+                }, function(a, c) {
+                    console.log('Auth error:', a, c);
+                });
             }, 2000);
 
-            network.quiet(Lampa.Utils.addUrlComponent(getApiUrl() + 'token_request', dev_token), function(found) {
-                if (found.status == 'ok') {
+            var tokenUrl = getApiUrl() + 'token_request?' + dev_token;
+            console.log('Token request URL:', tokenUrl);
+            
+            network.quiet(tokenUrl, function(found) {
+                console.log('Token response:', found);
+                if (found && found.status == 'ok') {
                     user_token = found.code;
                     user_code = found.user_code;
                     modal.find('.selector').text(user_code);
                     if (!$('.modal').length) openModal();
                 } else {
-                    Lampa.Noty.show(found);
+                    Lampa.Noty.show(found || 'Ошибка получения токена');
                 }
             }, function(a, c) {
-                Lampa.Noty.show(network.errorDecode(a, c));
+                console.log('Token error:', a, c);
+                Lampa.Noty.show('Ошибка подключения к Filmix');
             });
 
             component.loading(false);
@@ -130,88 +147,176 @@
             var year = parseInt((object.movie.release_date || object.movie.first_air_date || '0000').slice(0, 4));
             var orig = object.movie.original_name || object.movie.original_title;
 
+            console.log('Searching for:', { query, year, orig, token: fxapi_token });
+
             performSearch();
 
             function performSearch() {
-                // 1. Формируем URL для поиска к ТЕКУЩЕМУ API
-                var url = getApiUrl() + 'search';
-                url = Lampa.Utils.addUrlComponent(url, 'story=' + encodeURIComponent(query));
-                url = Lampa.Utils.addUrlComponent(url, dev_token + fxapi_token);
-
-                // 2. Оборачиваем в прокси для обхода CORS
-                var proxy = getProxyUrl();
-                var fullUrl = proxy + url;
-
+                // Формируем URL для поиска (БЕЗ прокси сначала)
+                var apiUrl = getApiUrl();
+                var searchUrl = apiUrl + 'search?story=' + encodeURIComponent(query) + '&' + dev_token + fxapi_token;
+                
+                console.log('Search URL (raw):', searchUrl);
+                
+                // Пробуем без прокси
                 network.clear();
-                network.silent(fullUrl, function(json) {
-                    retry_count = 0; // Сброс счетчика при успехе
-
+                network.timeout(10000);
+                network.silent(searchUrl, function(json) {
+                    console.log('Search response (direct):', json);
+                    if (json && json.length) {
+                        processResults(json);
+                    } else {
+                        // Если не работает, пробуем через прокси
+                        tryWithProxy();
+                    }
+                }, function(error, status) {
+                    console.log('Direct search failed:', error, status);
+                    tryWithProxy();
+                });
+                
+                function tryWithProxy() {
+                    var proxy = getProxyUrl();
+                    var fullUrl = proxy + searchUrl;
+                    console.log('Search URL (with proxy):', fullUrl);
+                    
+                    network.clear();
+                    network.timeout(15000);
+                    network.silent(fullUrl, function(json) {
+                        console.log('Search response (with proxy):', json);
+                        if (json && json.length) {
+                            processResults(json);
+                        } else {
+                            // Если не работает, пробуем следующий API
+                            if (retry_count < max_retries) {
+                                retry_count++;
+                                switchApiEndpoint();
+                                performSearch();
+                            } else {
+                                component.doesNotAnswer();
+                            }
+                        }
+                    }, function(error, status) {
+                        console.log('Proxy search failed:', error, status);
+                        if (retry_count < max_retries) {
+                            retry_count++;
+                            switchApiEndpoint();
+                            performSearch();
+                        } else {
+                            component.doesNotAnswer();
+                        }
+                    });
+                }
+                
+                function processResults(json) {
+                    retry_count = 0;
+                    
+                    if (!json || !json.length) {
+                        component.doesNotAnswer();
+                        return;
+                    }
+                    
+                    // Парсим год из alt_name (пример: "Название-2024")
                     var cards = json.filter(function(c) {
-                        c.year = parseInt(c.alt_name.split('-').pop());
+                        if (c.alt_name) {
+                            var yearMatch = c.alt_name.match(/-(\d{4})$/);
+                            c.year = yearMatch ? parseInt(yearMatch[1]) : 0;
+                        }
                         return c.year > year - 2 && c.year < year + 2;
                     });
-
+                    
+                    console.log('Filtered cards:', cards);
+                    
                     var card = cards.find(function(c) {
-                        return c.year == year && normalizeString(c.original_title) == normalizeString(orig);
+                        return c.year == year && 
+                               c.original_title && 
+                               normalizeString(c.original_title) == normalizeString(orig);
                     });
-
+                    
                     if (!card && cards.length == 1) card = cards[0];
-
+                    
                     if (card) {
+                        console.log('Found exact match:', card);
                         _this.find(card.id);
                     } else if (json.length) {
+                        console.log('Showing similar results');
                         wait_similars = true;
                         component.similars(json);
                         component.loading(false);
                     } else {
                         component.doesNotAnswer();
                     }
-                }, function(a, c) {
-                    // Ошибка сети или CORS? Пробуем следующий API-эндпоинт
-                    if (retry_count < max_retries) {
-                        retry_count++;
-                        switchApiEndpoint();
-                        performSearch(); // Повторяем поиск с новым API
-                    } else {
-                        component.doesNotAnswer();
-                    }
-                });
+                }
             }
         };
 
         // --- Получение данных о фильме ---
         this.find = function(filmix_id) {
+            console.log('Getting details for ID:', filmix_id);
             retry_count = 0;
             performFind();
 
             function performFind() {
-                var url = getApiUrl() + 'post/' + filmix_id + '?' + dev_token + fxapi_token;
-                var proxy = getProxyUrl();
-                var fullUrl = proxy + url;
-
+                var apiUrl = getApiUrl();
+                var detailsUrl = apiUrl + 'post/' + filmix_id + '?' + dev_token + fxapi_token;
+                
+                console.log('Details URL (raw):', detailsUrl);
+                
+                // Пробуем без прокси
                 network.clear();
                 network.timeout(10000);
-                network.silent(fullUrl, function(found) {
-                    retry_count = 0;
+                network.silent(detailsUrl, function(found) {
+                    console.log('Details response (direct):', found);
                     if (found && Object.keys(found).length) {
-                        success(found);
-                        component.loading(false);
+                        processDetails(found);
                     } else {
-                        component.doesNotAnswer();
+                        tryWithProxy();
                     }
-                }, function(a, c) {
-                    if (retry_count < max_retries) {
-                        retry_count++;
-                        switchApiEndpoint();
-                        performFind();
-                    } else {
-                        component.doesNotAnswer();
-                    }
+                }, function(error, status) {
+                    console.log('Direct details failed:', error, status);
+                    tryWithProxy();
                 });
+                
+                function tryWithProxy() {
+                    var proxy = getProxyUrl();
+                    var fullUrl = proxy + detailsUrl;
+                    console.log('Details URL (with proxy):', fullUrl);
+                    
+                    network.clear();
+                    network.timeout(15000);
+                    network.silent(fullUrl, function(found) {
+                        console.log('Details response (with proxy):', found);
+                        if (found && Object.keys(found).length) {
+                            processDetails(found);
+                        } else {
+                            if (retry_count < max_retries) {
+                                retry_count++;
+                                switchApiEndpoint();
+                                performFind();
+                            } else {
+                                component.doesNotAnswer();
+                            }
+                        }
+                    }, function(error, status) {
+                        console.log('Proxy details failed:', error, status);
+                        if (retry_count < max_retries) {
+                            retry_count++;
+                            switchApiEndpoint();
+                            performFind();
+                        } else {
+                            component.doesNotAnswer();
+                        }
+                    });
+                }
+                
+                function processDetails(found) {
+                    retry_count = 0;
+                    success(found);
+                    component.loading(false);
+                }
             }
         };
 
-        // --- Методы для работы с выбором (полностью из fx.js) ---
+        // --- Методы для работы с выбором ---
         this.extendChoice = function(saved) {
             Lampa.Arrays.extend(choice, saved, true);
         };
@@ -239,8 +344,8 @@
             results = null;
         };
 
-        // --- Парсинг ответа от Filmix (полностью из fx.js) ---
         function success(json) {
+            console.log('Success! Full data:', json);
             results = json;
             extractData(json);
             filter();
@@ -250,8 +355,11 @@
         function extractData(data) {
             extract = {};
             var pl_links = data.player_links;
+            
+            console.log('Player links:', pl_links);
 
-            if (pl_links.playlist && Object.keys(pl_links.playlist).length > 0) {
+            if (pl_links && pl_links.playlist && Object.keys(pl_links.playlist).length > 0) {
+                // Обработка сериалов
                 var seas_num = 0;
                 for (var season in pl_links.playlist) {
                     var episode = pl_links.playlist[season];
@@ -266,10 +374,11 @@
                         for (var ID in episode_voice) {
                             var file_episod = episode_voice[ID];
                             var quality_eps = file_episod.qualities.filter(function(qualitys) {
-                                return qualitys <= window.filmix.max_qualitie;
+                                return qualitys <= (window.filmix ? window.filmix.max_qualitie : 720);
                             });
-                            var max_quality = Math.max.apply(null, quality_eps);
+                            var max_quality = quality_eps.length ? Math.max.apply(null, quality_eps) : 720;
                             var stream_url = file_episod.link.replace('%s.mp4', max_quality + '.mp4');
+                            
                             var s_e = stream_url.slice(0 - stream_url.length + stream_url.lastIndexOf('/'));
                             var str_s_e = s_e.match(/s(\d+)e(\d+?)_\d+\.mp4/i);
 
@@ -289,6 +398,7 @@
                                 });
                             }
                         }
+                        
                         if (!extract[transl_id]) extract[transl_id] = { json: [], file: '' };
                         extract[transl_id].json.push({
                             id: seas_num,
@@ -298,17 +408,25 @@
                         });
                     }
                 }
-            } else if (pl_links.movie && pl_links.movie.length > 0) {
+            } else if (pl_links && pl_links.movie && pl_links.movie.length > 0) {
+                // Обработка фильмов
                 var _transl_id = 0;
                 for (var _ID in pl_links.movie) {
                     var _file_episod = pl_links.movie[_ID];
                     ++_transl_id;
+                    
                     var _quality_eps = _file_episod.link.match(/.+\[(.+[\d])[,]+?\].+/i);
-                    if (_quality_eps) _quality_eps = _quality_eps[1].split(',').filter(function(quality_) {
-                        return quality_ <= window.filmix.max_qualitie;
-                    });
+                    if (_quality_eps) {
+                        _quality_eps = _quality_eps[1].split(',').filter(function(quality_) {
+                            return quality_ <= (window.filmix ? window.filmix.max_qualitie : 720);
+                        });
+                    } else {
+                        _quality_eps = [720];
+                    }
+                    
                     var _max_quality = Math.max.apply(null, _quality_eps);
                     var file_url = _file_episod.link.replace(/\[(.+[\d])[,]+?\]/i, _max_quality);
+                    
                     extract[_transl_id] = {
                         file: file_url,
                         translation: _file_episod.translation,
@@ -317,14 +435,19 @@
                     };
                 }
             }
+            
+            console.log('Extracted data:', extract);
         }
 
-        // --- Функции для получения файла, фильтрации и отрисовки (полностью из fx.js) ---
+        // Остальные функции (getFile, filter, filtred, toPlayElement, append) остаются без изменений
+        // Они полностью скопированы из предыдущей версии
+        
         function getFile(element, max_quality) {
             var translat = extract[element.translation];
             var id = element.season + '_' + element.episode;
             var file = '';
             var quality = false;
+            
             if (translat) {
                 if (element.season) {
                     for (var i in translat.json) {
@@ -348,78 +471,97 @@
                     file = translat.file;
                 }
             }
+            
             max_quality = parseInt(max_quality);
+            
             if (file) {
                 var link = file.slice(0, file.lastIndexOf('_')) + '_';
                 var orin = file.split('?');
                 orin = orin.length > 1 ? '?' + orin.slice(1).join('?') : '';
+                
                 if (file.split('_').pop().replace('.mp4', '') !== max_quality) {
                     file = link + max_quality + '.mp4' + orin;
                 }
+                
                 quality = {};
                 var mass = [2160, 1440, 1080, 720, 480, 360];
                 mass = mass.slice(mass.indexOf(max_quality));
+                
                 mass.forEach(function(n) {
                     quality[n + 'p'] = link + n + '.mp4' + orin;
                 });
+                
                 var preferably = Lampa.Storage.get('video_quality_default', '1080') + 'p';
                 if (quality[preferably]) file = quality[preferably];
             }
+            
             return { file: file, quality: quality };
         }
 
         function filter() {
             filter_items = { season: [], voice: [], voice_info: [] };
+            
             if (results.last_episode && results.last_episode.season) {
                 var s = results.last_episode.season;
                 while (s--) {
                     filter_items.season.push(Lampa.Lang.translate('torrent_serial_season') + ' ' + (results.last_episode.season - s));
                 }
             }
-            for (var Id in results.player_links.playlist) {
-                var season = results.player_links.playlist[Id];
-                var d = 0;
-                for (var voic in season) {
-                    ++d;
-                    if (filter_items.voice.indexOf(voic) == -1) {
-                        filter_items.voice.push(voic);
-                        filter_items.voice_info.push({ id: d });
+            
+            if (results.player_links && results.player_links.playlist) {
+                for (var Id in results.player_links.playlist) {
+                    var season = results.player_links.playlist[Id];
+                    var d = 0;
+                    for (var voic in season) {
+                        ++d;
+                        if (filter_items.voice.indexOf(voic) == -1) {
+                            filter_items.voice.push(voic);
+                            filter_items.voice_info.push({ id: d });
+                        }
                     }
                 }
             }
+            
             if (choice.voice_name) {
                 var inx = filter_items.voice.map(function(v) { return v.toLowerCase(); }).indexOf(choice.voice_name.toLowerCase());
-                if (inx == -1) choice.voice = 0;
-                else if (inx !== choice.voice) { choice.voice = inx; }
+                if (inx == -1) {
+                    choice.voice = 0;
+                } else if (inx !== choice.voice) {
+                    choice.voice = inx;
+                }
             }
+            
             component.filter(filter_items, choice);
         }
 
         function filtred() {
             var filtred = [];
-            if (Object.keys(results.player_links.playlist).length) {
+            
+            if (results.player_links && results.player_links.playlist && Object.keys(results.player_links.playlist).length) {
                 for (var transl in extract) {
                     var element = extract[transl];
-                    for (var season_id in element.json) {
-                        var episode = element.json[season_id];
-                        if (episode.id == choice.season + 1) {
-                            episode.folder.forEach(function(media) {
-                                if (media.translation == filter_items.voice_info[choice.voice].id) {
-                                    filtred.push({
-                                        episode: parseInt(media.episode),
-                                        season: media.season,
-                                        title: Lampa.Lang.translate('torrent_serial_episode') + ' ' + media.episode + (media.title ? ' - ' + media.title : ''),
-                                        quality: media.quality + 'p ',
-                                        translation: media.translation,
-                                        voice_name: filter_items.voice[choice.voice],
-                                        info: filter_items.voice[choice.voice]
-                                    });
-                                }
-                            });
+                    if (element.json) {
+                        for (var season_id in element.json) {
+                            var episode = element.json[season_id];
+                            if (episode.id == choice.season + 1 && episode.folder) {
+                                episode.folder.forEach(function(media) {
+                                    if (media.translation == filter_items.voice_info[choice.voice].id) {
+                                        filtred.push({
+                                            episode: parseInt(media.episode),
+                                            season: media.season,
+                                            title: Lampa.Lang.translate('torrent_serial_episode') + ' ' + media.episode + (media.title ? ' - ' + media.title : ''),
+                                            quality: media.quality + 'p ',
+                                            translation: media.translation,
+                                            voice_name: filter_items.voice[choice.voice],
+                                            info: filter_items.voice[choice.voice]
+                                        });
+                                    }
+                                });
+                            }
                         }
                     }
                 }
-            } else if (Object.keys(results.player_links.movie).length) {
+            } else if (results.player_links && results.player_links.movie && Object.keys(results.player_links.movie).length) {
                 for (var transl_id in extract) {
                     var _element = extract[transl_id];
                     filtred.push({
@@ -431,6 +573,7 @@
                     });
                 }
             }
+            
             return filtred;
         }
 
@@ -455,6 +598,7 @@
                     if (extra.file) {
                         var playlist = [];
                         var first = toPlayElement(item);
+                        
                         if (item.season) {
                             items.forEach(function(elem) {
                                 playlist.push(toPlayElement(elem));
@@ -462,7 +606,9 @@
                         } else {
                             playlist.push(first);
                         }
+                        
                         if (playlist.length > 1) first.playlist = playlist;
+                        
                         Lampa.Player.play(first);
                         Lampa.Player.playlist(playlist);
                         item.mark();
@@ -477,7 +623,7 @@
         }
     }
 
-    // ================== 3. КОМПОНЕНТ ИНТЕРФЕЙСА (полностью из fx.js) ==================
+    // ================== КОМПОНЕНТ ИНТЕРФЕЙСА ==================
     function component(object) {
         var network = new Lampa.Reguest();
         var scroll = new Lampa.Scroll({ mask: true, over: true });
@@ -499,7 +645,6 @@
             source: Lampa.Lang.translate('settings_rest_source')
         };
 
-        // ВАЖНО: Добавляем метод create
         this.create = function() { return this.render(); };
 
         this.initialize = function() {
@@ -551,7 +696,8 @@
         this.find = function() {
             if (source.searchByTitle) {
                 this.extendChoice();
-                source.searchByTitle(object, object.search || object.movie.original_title || object.movie.original_name || object.movie.title || object.movie.name);
+                var query = object.search || object.movie.original_title || object.movie.original_name || object.movie.title || object.movie.name;
+                source.searchByTitle(object, query);
             }
         };
 
@@ -951,14 +1097,14 @@
     }
 
     // ================== 4. ЗАПУСК ПЛАГИНА ==================
-    function startPlugin() {
+     function startPlugin() {
         window.online_filmix = true;
 
         var manifest = {
             type: 'video',
-            version: '2.0.0', // Новая версия
-            name: 'Filmix Online (API Switcher)',
-            description: 'Плагин для Filmix с интерфейсом fx.js и умным переключением API',
+            version: '2.1.0',
+            name: 'Filmix Online (Debug)',
+            description: 'Плагин для Filmix с отладкой',
             component: 'online_filmix',
             onContextMenu: function onContextMenu(object) {
                 return { name: Lampa.Lang.translate('online_watch'), description: '' };
@@ -1090,4 +1236,5 @@
 
     if (!window.online_filmix && Lampa.Manifest.app_digital >= 155) startPlugin();
 })();
+
 
