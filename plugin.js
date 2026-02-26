@@ -14,8 +14,7 @@
     var api_endpoints = [
         'http://filmixapp.vip/api/v2/',   // Рабочий из fx.js
         'http://filmixapp.cyou/api/v2/',  // Из online_mod.js
-        'https://filmix.ac/api/v2/',       // Резервный
-        'https://filmix.my/api/v2/'        // Резервный
+
     ];
     var current_api_index = 0;
 
@@ -1232,6 +1231,7 @@ function getProxyUrl() {
 
     if (!window.online_filmix && Lampa.Manifest.app_digital >= 155) startPlugin();
 })();
+
 
 
 
