@@ -277,7 +277,7 @@
             var file = '';
             var quality = false;
             var qualities = [];
-
+        
             if (translat) {
                 if (element.season) {
                     for (var i in translat.json) {
@@ -304,31 +304,32 @@
                     qualities = translat.qualities || [];
                 }
             }
-
+        
             max_quality = parseInt(max_quality);
-
+        
             if (file) {
                 var link = file.slice(0, file.lastIndexOf('_')) + '_';
                 var orin = file.split('?');
                 orin = orin.length > 1 ? '?' + orin.slice(1).join('?') : '';
-
-                // Сохраняем все доступные качества
+        
                 quality = {};
                 qualities.forEach(function(q) {
-                    quality[q + 'p'] = link + q + '.mp4' + orin;
+                    var url = link + q + '.mp4' + orin;
+                    // ПРИНУДИТЕЛЬНО МЕНЯЕМ HTTPS НА HTTP
+                    url = url.replace('https://', 'http://');
+                    quality[q + 'p'] = url;
                 });
-
-                // Выбираем предпочтительное качество
+        
                 var preferably = Lampa.Storage.get('video_quality_default', '1080') + 'p';
                 if (quality[preferably]) {
                     file = quality[preferably];
                 } else {
-                    // Если нет предпочтительного, берем максимальное
                     var maxQ = Math.max.apply(null, qualities);
                     file = link + maxQ + '.mp4' + orin;
+                    file = file.replace('https://', 'http://');
                 }
             }
-
+        
             return {
                 file: file,
                 quality: quality,
@@ -437,34 +438,37 @@
         }
 
         // --- ИЗМЕНЕННАЯ ФУНКЦИЯ append (с правильным воспроизведением) ---
-        function append(items) {
+        function append(items){
             component.reset();
             component.draw(items, {
                 similars: wait_similars,
                 onEnter: function onEnter(item, html) {
                     var extra = getFile(item, item.quality);
-
+        
                     if (extra.file) {
                         var playlist = [];
+                        // Еще раз гарантируем http
+                        var videoUrl = extra.file.replace('https://', 'http://');
+                        
                         var first = {
                             title: item.title,
-                            url: extra.file,
+                            url: videoUrl,
                             quality: extra.quality,
                             timeline: item.timeline,
                             callback: item.mark,
-                            // Добавляем заголовки как в online_mod.js
                             headers: {
                                 'Referer': 'https://filmix.ac/',
                                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                             }
                         };
-
+        
                         if (item.season) {
                             items.forEach(function(elem) {
                                 var ex = getFile(elem, elem.quality);
+                                var elemUrl = ex.file.replace('https://', 'http://');
                                 playlist.push({
                                     title: elem.title,
-                                    url: ex.file,
+                                    url: elemUrl,
                                     quality: ex.quality,
                                     timeline: elem.timeline,
                                     callback: elem.mark,
@@ -477,9 +481,9 @@
                         } else {
                             playlist.push(first);
                         }
-
+        
                         if (playlist.length > 1) first.playlist = playlist;
-
+        
                         Lampa.Player.play(first);
                         Lampa.Player.playlist(playlist);
                         item.mark();
@@ -1467,3 +1471,4 @@
 
     if (!window.online_filmix && Lampa.Manifest.app_digital >= 155) startPlugin();
 })();
+
