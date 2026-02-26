@@ -29,18 +29,20 @@
         return getApiUrl();
     }
 
-    // --- Прокси (проверенные рабочие) ---
-    function getProxyUrl() {
-        // Более надежные прокси
-        var proxies = [
-            'https://cors.nb557.workers.dev/',
-            'https://cors.fx666.workers.dev/',
-            'https://proxy.cors.sh/',
-            'https://cors-anywhere.herokuapp.com/'
-        ];
-        // Берем случайный прокси для распределения нагрузки
-        return proxies[Math.floor(Math.random() * proxies.length)];
-    }
+    var WORKING_PROXIES = [
+    'https://cors.nb557.workers.dev/',
+    'https://cors.fx666.workers.dev/',
+    'https://cors-anywhere.herokuapp.com/'
+];
+
+function getProxyUrl() {
+    // Берем первый прокси как основной
+    return WORKING_PROXIES[0];
+    
+    // Или чередуем для надежности:
+    // var index = Math.floor(Math.random() * WORKING_PROXIES.length);
+    // return WORKING_PROXIES[index];
+}
 
     // --- Токен (исправлен) ---
     var dev_token = 'user_dev_apk=2.0.1&user_dev_id=' + unic_id + '&user_dev_name=Lampa&user_dev_os=11&user_dev_vendor=FILMIX&user_dev_token=';
@@ -250,63 +252,57 @@
         };
 
         // --- Получение данных о фильме ---
-        this.find = function(filmix_id) {
-            console.log('Getting details for ID:', filmix_id);
-            retry_count = 0;
-            performFind();
+       this.find = function(filmix_id) {
+    console.log('Getting details for ID:', filmix_id);
+    retry_count = 0;
+    performFind();
 
-            function performFind() {
-                var apiUrl = getApiUrl();
-                var detailsUrl = apiUrl + 'post/' + filmix_id + '?' + dev_token + fxapi_token;
-                
-                console.log('Details URL (raw):', detailsUrl);
-                
-                // Пробуем без прокси
-                network.clear();
-                network.timeout(10000);
-                network.silent(detailsUrl, function(found) {
-                    console.log('Details response (direct):', found);
-                    if (found && Object.keys(found).length) {
-                        processDetails(found);
-                    } else {
-                        tryWithProxy();
-                    }
-                }, function(error, status) {
-                    console.log('Direct details failed:', error, status);
-                    tryWithProxy();
-                });
-                
-                function tryWithProxy() {
-                    var proxy = getProxyUrl();
-                    var fullUrl = proxy + detailsUrl;
-                    console.log('Details URL (with proxy):', fullUrl);
-                    
-                    network.clear();
-                    network.timeout(15000);
-                    network.silent(fullUrl, function(found) {
-                        console.log('Details response (with proxy):', found);
-                        if (found && Object.keys(found).length) {
-                            processDetails(found);
-                        } else {
-                            if (retry_count < max_retries) {
-                                retry_count++;
-                                switchApiEndpoint();
-                                performFind();
-                            } else {
-                                component.doesNotAnswer();
-                            }
-                        }
-                    }, function(error, status) {
-                        console.log('Proxy details failed:', error, status);
-                        if (retry_count < max_retries) {
-                            retry_count++;
-                            switchApiEndpoint();
-                            performFind();
-                        } else {
-                            component.doesNotAnswer();
-                        }
-                    });
+    function performFind() {
+        var apiUrl = getApiUrl();
+        // Формируем параметры правильно
+        var params = dev_token + fxapi_token;
+        var detailsUrl = apiUrl + 'post/' + filmix_id + '?' + params;
+        
+        console.log('Details URL (raw):', detailsUrl);
+        
+        // Сразу используем прокси - прямой запрос не работает из-за CORS
+        var proxy = getProxyUrl();
+        var fullUrl = proxy + detailsUrl;
+        console.log('Details URL (with proxy):', fullUrl);
+        
+        network.clear();
+        network.timeout(15000);
+        network.silent(fullUrl, function(found) {
+            console.log('Details response:', found);
+            
+            if (found && typeof found === 'object' && Object.keys(found).length > 0) {
+                retry_count = 0;
+                success(found);
+                component.loading(false);
+            } else {
+                // Если ответ пустой, пробуем следующее зеркало API
+                if (retry_count < max_retries - 1) {
+                    retry_count++;
+                    switchApiEndpoint();
+                    performFind();
+                } else {
+                    component.doesNotAnswer();
                 }
+            }
+        }, function(error, status) {
+            console.log('Proxy request failed:', error, status);
+            
+            // При ошибке пробуем следующее зеркало API
+            if (retry_count < max_retries - 1) {
+                retry_count++;
+                switchApiEndpoint();
+                performFind();
+            } else {
+                component.doesNotAnswer();
+            }
+        });
+    }
+};
                 
                 function processDetails(found) {
                     retry_count = 0;
@@ -1236,5 +1232,6 @@
 
     if (!window.online_filmix && Lampa.Manifest.app_digital >= 155) startPlugin();
 })();
+
 
 
