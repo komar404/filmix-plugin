@@ -12,11 +12,9 @@
 
     // --- Список API-эндпоинтов Filmix (для автоматического переключения) ---
     var api_endpoints = [
-        'http://filmixapp.vip/api/v2/',   // Рабочий из fx.js
-        'http://filmixapp.cyou/api/v2/',  // Из online_mod.js (может быть недоступен)
-        'https://filmix.ac/api/v2/',       // Резервный
-        'https://filmix.my/api/v2/',        // Резервный
-        'https://filmix.la/api/v2/'         // Дополнительный
+       'http://filmixapp.cyou/api/v2/',  // Из online_mod.js (может быть недоступен),   
+       'http://filmixapp.vip/api/v2/'    // Рабочий из fx.js
+        
     ];
     var current_api_index = 0;
 
@@ -1092,3 +1090,4 @@
 
     if (!window.online_filmix && Lampa.Manifest.app_digital >= 155) startPlugin();
 })();
+
