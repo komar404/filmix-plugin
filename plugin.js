@@ -10,11 +10,10 @@
         Lampa.Storage.set('fxapi_uid', unic_id);
     }
 
-    // --- Список API-эндпоинтов ---
+    // --- Список API-эндпоинтов Filmix (только filmixapp) ---
     var api_endpoints = [
-        'http://filmixapp.vip/api/v2/',   // Рабочий из fx.js
-        'http://filmixapp.cyou/api/v2/',  // Из online_mod.js
-
+        'http://filmixapp.vip/api/v2/',
+        'http://filmixapp.cyou/api/v2/'
     ];
     var current_api_index = 0;
 
@@ -28,28 +27,24 @@
         return getApiUrl();
     }
 
+    // --- Рабочие CORS-прокси (проверенные из online_mod.js) ---
     var WORKING_PROXIES = [
-    'https://cors.nb557.workers.dev/',
-    'https://cors.fx666.workers.dev/',
-    'https://cors-anywhere.herokuapp.com/'
-];
+        'https://cors.nb557.workers.dev/',
+        'https://cors.fx666.workers.dev/'
+    ];
 
-function getProxyUrl() {
-    // Берем первый прокси как основной
-    return WORKING_PROXIES[0];
-    
-    // Или чередуем для надежности:
-    // var index = Math.floor(Math.random() * WORKING_PROXIES.length);
-    // return WORKING_PROXIES[index];
-}
+    function getProxyUrl() {
+        // Чередуем прокси для распределения нагрузки
+        return new Date().getMinutes() % 2 === 0 ? WORKING_PROXIES[0] : WORKING_PROXIES[1];
+    }
 
-    // --- Токен (исправлен) ---
+    // --- Токен для Filmix API ---
     var dev_token = 'user_dev_apk=2.0.1&user_dev_id=' + unic_id + '&user_dev_name=Lampa&user_dev_os=11&user_dev_vendor=FILMIX&user_dev_token=';
 
     var modalopen = false;
     var ping_auth;
 
-    // ================== ОСНОВНАЯ ЛОГИКА ==================
+    // ================== ОСНОВНАЯ ЛОГИКА API ==================
     function filmixApi(component, _object) {
         var network = new Lampa.Reguest();
         var extract = {};
@@ -95,26 +90,20 @@ function getProxyUrl() {
 
             ping_auth = setInterval(function() {
                 var url = getApiUrl() + 'user_profile?' + dev_token + user_token;
-                console.log('Auth check URL:', url);
                 
                 network.silent(url, function(json) {
-                    console.log('Auth response:', json);
                     if (json && json.user_data) {
                         Lampa.Modal.close();
                         clearInterval(ping_auth);
                         Lampa.Storage.set("fxapi_token", user_token);
                         window.location.reload();
                     }
-                }, function(a, c) {
-                    console.log('Auth error:', a, c);
-                });
+                }, function(a, c) {});
             }, 2000);
 
             var tokenUrl = getApiUrl() + 'token_request?' + dev_token;
-            console.log('Token request URL:', tokenUrl);
             
             network.quiet(tokenUrl, function(found) {
-                console.log('Token response:', found);
                 if (found && found.status == 'ok') {
                     user_token = found.code;
                     user_code = found.user_code;
@@ -124,7 +113,6 @@ function getProxyUrl() {
                     Lampa.Noty.show(found || 'Ошибка получения токена');
                 }
             }, function(a, c) {
-                console.log('Token error:', a, c);
                 Lampa.Noty.show('Ошибка подключения к Filmix');
             });
 
@@ -148,75 +136,43 @@ function getProxyUrl() {
             var year = parseInt((object.movie.release_date || object.movie.first_air_date || '0000').slice(0, 4));
             var orig = object.movie.original_name || object.movie.original_title;
 
-            console.log('Searching for:', { query, year, orig, token: fxapi_token });
-
             performSearch();
 
             function performSearch() {
-                // Формируем URL для поиска (БЕЗ прокси сначала)
                 var apiUrl = getApiUrl();
                 var searchUrl = apiUrl + 'search?story=' + encodeURIComponent(query) + '&' + dev_token + fxapi_token;
                 
-                console.log('Search URL (raw):', searchUrl);
+                // Сразу используем прокси
+                var proxy = getProxyUrl();
+                var fullUrl = proxy + searchUrl;
                 
-                // Пробуем без прокси
                 network.clear();
-                network.timeout(10000);
-                network.silent(searchUrl, function(json) {
-                    console.log('Search response (direct):', json);
+                network.timeout(15000);
+                network.silent(fullUrl, function(json) {
                     if (json && json.length) {
                         processResults(json);
                     } else {
-                        // Если не работает, пробуем через прокси
-                        tryWithProxy();
-                    }
-                }, function(error, status) {
-                    console.log('Direct search failed:', error, status);
-                    tryWithProxy();
-                });
-                
-                function tryWithProxy() {
-                    var proxy = getProxyUrl();
-                    var fullUrl = proxy + searchUrl;
-                    console.log('Search URL (with proxy):', fullUrl);
-                    
-                    network.clear();
-                    network.timeout(15000);
-                    network.silent(fullUrl, function(json) {
-                        console.log('Search response (with proxy):', json);
-                        if (json && json.length) {
-                            processResults(json);
-                        } else {
-                            // Если не работает, пробуем следующий API
-                            if (retry_count < max_retries) {
-                                retry_count++;
-                                switchApiEndpoint();
-                                performSearch();
-                            } else {
-                                component.doesNotAnswer();
-                            }
-                        }
-                    }, function(error, status) {
-                        console.log('Proxy search failed:', error, status);
-                        if (retry_count < max_retries) {
+                        if (retry_count < max_retries - 1) {
                             retry_count++;
                             switchApiEndpoint();
                             performSearch();
                         } else {
                             component.doesNotAnswer();
                         }
-                    });
-                }
+                    }
+                }, function(error, status) {
+                    if (retry_count < max_retries - 1) {
+                        retry_count++;
+                        switchApiEndpoint();
+                        performSearch();
+                    } else {
+                        component.doesNotAnswer();
+                    }
+                });
                 
                 function processResults(json) {
                     retry_count = 0;
                     
-                    if (!json || !json.length) {
-                        component.doesNotAnswer();
-                        return;
-                    }
-                    
-                    // Парсим год из alt_name (пример: "Название-2024")
                     var cards = json.filter(function(c) {
                         if (c.alt_name) {
                             var yearMatch = c.alt_name.match(/-(\d{4})$/);
@@ -224,8 +180,6 @@ function getProxyUrl() {
                         }
                         return c.year > year - 2 && c.year < year + 2;
                     });
-                    
-                    console.log('Filtered cards:', cards);
                     
                     var card = cards.find(function(c) {
                         return c.year == year && 
@@ -236,10 +190,8 @@ function getProxyUrl() {
                     if (!card && cards.length == 1) card = cards[0];
                     
                     if (card) {
-                        console.log('Found exact match:', card);
                         _this.find(card.id);
                     } else if (json.length) {
-                        console.log('Showing similar results');
                         wait_similars = true;
                         component.similars(json);
                         component.loading(false);
@@ -251,63 +203,43 @@ function getProxyUrl() {
         };
 
         // --- Получение данных о фильме ---
-       this.find = function(filmix_id) {
-    console.log('Getting details for ID:', filmix_id);
-    retry_count = 0;
-    performFind();
+        this.find = function(filmix_id) {
+            retry_count = 0;
+            performFind();
 
-    function performFind() {
-        var apiUrl = getApiUrl();
-        // Формируем параметры правильно
-        var params = dev_token + fxapi_token;
-        var detailsUrl = apiUrl + 'post/' + filmix_id + '?' + params;
-        
-        console.log('Details URL (raw):', detailsUrl);
-        
-        // Сразу используем прокси - прямой запрос не работает из-за CORS
-        var proxy = getProxyUrl();
-        var fullUrl = proxy + detailsUrl;
-        console.log('Details URL (with proxy):', fullUrl);
-        
-        network.clear();
-        network.timeout(15000);
-        network.silent(fullUrl, function(found) {
-            console.log('Details response:', found);
-            
-            if (found && typeof found === 'object' && Object.keys(found).length > 0) {
-                retry_count = 0;
-                success(found);
-                component.loading(false);
-            } else {
-                // Если ответ пустой, пробуем следующее зеркало API
-                if (retry_count < max_retries - 1) {
-                    retry_count++;
-                    switchApiEndpoint();
-                    performFind();
-                } else {
-                    component.doesNotAnswer();
-                }
-            }
-        }, function(error, status) {
-            console.log('Proxy request failed:', error, status);
-            
-            // При ошибке пробуем следующее зеркало API
-            if (retry_count < max_retries - 1) {
-                retry_count++;
-                switchApiEndpoint();
-                performFind();
-            } else {
-                component.doesNotAnswer();
-            }
-        });
-    }
-};
+            function performFind() {
+                var apiUrl = getApiUrl();
+                var detailsUrl = apiUrl + 'post/' + filmix_id + '?' + dev_token + fxapi_token;
                 
-                function processDetails(found) {
-                    retry_count = 0;
-                    success(found);
-                    component.loading(false);
-                }
+                // Сразу используем прокси
+                var proxy = getProxyUrl();
+                var fullUrl = proxy + detailsUrl;
+                
+                network.clear();
+                network.timeout(15000);
+                network.silent(fullUrl, function(found) {
+                    if (found && Object.keys(found).length > 0) {
+                        retry_count = 0;
+                        success(found);
+                        component.loading(false);
+                    } else {
+                        if (retry_count < max_retries - 1) {
+                            retry_count++;
+                            switchApiEndpoint();
+                            performFind();
+                        } else {
+                            component.doesNotAnswer();
+                        }
+                    }
+                }, function(error, status) {
+                    if (retry_count < max_retries - 1) {
+                        retry_count++;
+                        switchApiEndpoint();
+                        performFind();
+                    } else {
+                        component.doesNotAnswer();
+                    }
+                });
             }
         };
 
@@ -340,7 +272,6 @@ function getProxyUrl() {
         };
 
         function success(json) {
-            console.log('Success! Full data:', json);
             results = json;
             extractData(json);
             filter();
@@ -350,8 +281,6 @@ function getProxyUrl() {
         function extractData(data) {
             extract = {};
             var pl_links = data.player_links;
-            
-            console.log('Player links:', pl_links);
 
             if (pl_links && pl_links.playlist && Object.keys(pl_links.playlist).length > 0) {
                 // Обработка сериалов
@@ -430,13 +359,8 @@ function getProxyUrl() {
                     };
                 }
             }
-            
-            console.log('Extracted data:', extract);
         }
 
-        // Остальные функции (getFile, filter, filtred, toPlayElement, append) остаются без изменений
-        // Они полностью скопированы из предыдущей версии
-        
         function getFile(element, max_quality) {
             var translat = extract[element.translation];
             var id = element.season + '_' + element.episode;
@@ -808,7 +732,7 @@ function getProxyUrl() {
                 var tmdburl = 'tv/' + object.movie.id + '/season/' + season + '?api_key=' + Lampa.TMDB.key() + '&language=' + Lampa.Storage.get('language', 'ru');
                 var baseurl = Lampa.TMDB.api(tmdburl);
                 network.timeout(1000 * 10);
-                network["native"](baseurl, function(data) { episodes = data.episodes || []; call(episodes); }, function(a, c) { call(episodes); });
+                network.native(baseurl, function(data) { episodes = data.episodes || []; call(episodes); }, function(a, c) { call(episodes); });
             } else call(episodes);
         };
 
@@ -1091,15 +1015,15 @@ function getProxyUrl() {
         };
     }
 
-    // ================== 4. ЗАПУСК ПЛАГИНА ==================
-     function startPlugin() {
+    // ================== ЗАПУСК ПЛАГИНА ==================
+    function startPlugin() {
         window.online_filmix = true;
 
         var manifest = {
             type: 'video',
             version: '2.1.0',
-            name: 'Filmix Online (Debug)',
-            description: 'Плагин для Filmix с отладкой',
+            name: 'Filmix Online',
+            description: 'Плагин для просмотра фильмов и сериалов с Filmix',
             component: 'online_filmix',
             onContextMenu: function onContextMenu(object) {
                 return { name: Lampa.Lang.translate('online_watch'), description: '' };
@@ -1122,7 +1046,7 @@ function getProxyUrl() {
 
         Lampa.Manifest.plugins = manifest;
 
-        // --- ВСЕ ПЕРЕВОДЫ ---
+        // --- ПЕРЕВОДЫ ---
         Lampa.Lang.add({
             online_watch: { ru: 'Смотреть на Filmix', en: 'Watch on Filmix', ua: 'Дивитися на Filmix', zh: '在Filmix观看' },
             title_online: { ru: 'Онлайн', uk: 'Онлайн', en: 'Online', zh: '在线的' },
@@ -1231,7 +1155,3 @@ function getProxyUrl() {
 
     if (!window.online_filmix && Lampa.Manifest.app_digital >= 155) startPlugin();
 })();
-
-
-
-
